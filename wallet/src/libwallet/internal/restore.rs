@@ -13,6 +13,7 @@
 // limitations under the License.
 //! Functions to restore a wallet's outputs from just the master seed
 
+use crate::core::core::committed::sum_commits;
 use crate::core::global;
 use crate::core::libtx::proof;
 use crate::keychain::{ExtKeychain, Identifier, Keychain};
@@ -320,6 +321,7 @@ where
 		batch.commit()?;
 	}
 
+	verify_outputs(wallet)?;
 	Ok(())
 }
 
@@ -369,5 +371,34 @@ where
 			batch.save_child_index(path, max_child_index + 1)?;
 		}
 	}
+	verify_outputs(wallet)?;
 	Ok(())
+}
+
+/// Verifies that the outputs in the wallet equal to the ones on chain
+pub fn verify_outputs<T, C, K>(wallet: &mut T) -> Result<(), Error>
+where
+	T: WalletBackend<C, K>,
+	C: NodeClient,
+	K: Keychain,
+{
+	warn!("Verifying wallet outputs match on chain outputs");
+	let chain_commitments = collect_chain_outputs(wallet)?
+		.iter()
+		.map(|o| o.commit)
+		.collect();
+
+	let wallet_commitments = updater::retrieve_outputs(&mut *wallet, true, None, None)?
+		.into_iter()
+		.map(|out| out.1)
+		.collect();
+
+	let sum = sum_commits(wallet_commitments, vec![]).unwrap();
+	let sum_chain = sum_commits(chain_commitments, vec![]).unwrap();
+	if sum == sum_chain {
+		warn!("Wallet outputs match chain outputs");
+	} else {
+		error!("Wallet outputs don't match chain outputs");
+	}
+	return Ok(());
 }
