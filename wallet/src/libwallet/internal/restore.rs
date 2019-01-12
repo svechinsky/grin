@@ -407,7 +407,9 @@ where
 
 	let blind_sum = wallet.keychain().blind_sum(&blind_sum)?;
 	let secp = wallet.keychain().secp().clone();
-	let commit = secp.commit(0, blind_sum.secret_key(&secp).unwrap()).unwrap();
+	let commit = secp
+		.commit(0, blind_sum.secret_key(&secp).unwrap())
+		.unwrap();
 	let chain_commitments: Vec<pedersen::Commitment> =
 		chain_outputs.into_iter().map(|out| out.commit).collect();
 	let chain_sum = sum_commits(chain_commitments, vec![commit]).unwrap();
@@ -416,7 +418,7 @@ where
 		.into_iter()
 		.fold(0, |acc, x| acc + x.amount_credited - x.amount_debited);
 	let commits_public = secp.commit_value(tx_sum).unwrap();
-	
+
 	if chain_sum == commits_public {
 		warn!("Outputs match");
 	} else {
