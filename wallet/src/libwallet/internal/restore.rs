@@ -16,11 +16,14 @@
 use crate::core::core::committed::sum_commits;
 use crate::core::global;
 use crate::core::libtx::proof;
-use crate::keychain::{ExtKeychain, Identifier, Keychain};
+use crate::keychain::{BlindSum, BlindingFactor, ExtKeychain, Identifier, Keychain};
 use crate::libwallet::internal::{keys, updater};
 use crate::libwallet::types::*;
 use crate::libwallet::Error;
-use crate::util::secp::{key::SecretKey, pedersen};
+use crate::util::secp::{
+	key::{PublicKey, SecretKey},
+	pedersen,
+};
 use std::collections::HashMap;
 
 /// Utility struct for return values from below
@@ -384,20 +387,38 @@ where
 	K: Keychain,
 {
 	warn!("Verifying wallet outputs match on chain outputs");
-	let chain_commitments = collect_chain_outputs(wallet)?
-		.iter()
-		.map(|o| o.commit)
+	let tx_log: Vec<TxLogEntry> = wallet
+		.tx_log_iter()
+		.filter(|tx| {
+			tx.tx_type != TxLogEntryType::TxReceivedCancelled
+				|| tx.tx_type != TxLogEntryType::TxSentCancelled
+		})
 		.collect();
-
-	let wallet_commitments = updater::retrieve_outputs(&mut *wallet, true, None, None)?
+	let chain_outputs = collect_chain_outputs(wallet)?;
+	let secret_keys: Vec<SecretKey> = chain_outputs
+		.clone()
 		.into_iter()
-		.map(|out| out.1)
+		.map(|out| out.blinding)
 		.collect();
+	let mut blind_sum = BlindSum::new();
+	for key in secret_keys.iter() {
+		blind_sum = blind_sum.add_blinding_factor(BlindingFactor::from_secret_key(*key));
+	}
 
-	let sum = sum_commits(wallet_commitments, vec![]).unwrap();
-	let sum_chain = sum_commits(chain_commitments, vec![]).unwrap();
-	if sum == sum_chain {
-		warn!("Wallet outputs match chain outputs");
+	let blind_sum = wallet.keychain().blind_sum(&blind_sum)?;
+	let secp = wallet.keychain().secp().clone();
+	let commit = secp.commit(0, blind_sum.secret_key(&secp).unwrap()).unwrap();
+	let chain_commitments: Vec<pedersen::Commitment> =
+		chain_outputs.into_iter().map(|out| out.commit).collect();
+	let chain_sum = sum_commits(chain_commitments, vec![commit]).unwrap();
+
+	let tx_sum = tx_log
+		.into_iter()
+		.fold(0, |acc, x| acc + x.amount_credited - x.amount_debited);
+	let commits_public = secp.commit_value(tx_sum).unwrap();
+	
+	if chain_sum == commits_public {
+		warn!("Outputs match");
 	} else {
 		error!("Wallet outputs don't match chain outputs");
 	}
