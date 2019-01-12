@@ -80,6 +80,22 @@ impl Peers {
 		Ok(())
 	}
 
+	/// Add a peer as banned to block future connections, usually due to failed
+	/// handshake
+	pub fn add_banned(&self, addr: SocketAddr, ban_reason: ReasonForBan) -> Result<(), Error> {
+		let peer_data = PeerData {
+			addr,
+			capabilities: Capabilities::UNKNOWN,
+			user_agent: "".to_string(),
+			flags: State::Banned,
+			last_banned: Utc::now().timestamp(),
+			ban_reason,
+			last_connected: Utc::now().timestamp(),
+		};
+		debug!("Banning peer {}.", addr);
+		self.save_peer(&peer_data)
+	}
+
 	// Update the dandelion relay
 	pub fn update_dandelion_relay(&self) {
 		let peers = self.outgoing_connected_peers();
@@ -181,6 +197,22 @@ impl Peers {
 
 		thread_rng().shuffle(&mut max_peers);
 		max_peers
+	}
+
+	// Return number of connected peers that currently advertise more/same work
+	// (total_difficulty) than/as we do.
+	pub fn more_or_same_work_peers(&self) -> usize {
+		let peers = self.connected_peers();
+		if peers.len() == 0 {
+			return 0;
+		}
+
+		let total_difficulty = self.total_difficulty();
+
+		peers
+			.iter()
+			.filter(|x| x.info.total_difficulty() >= total_difficulty)
+			.count()
 	}
 
 	/// Returns single random peer with more work than us.

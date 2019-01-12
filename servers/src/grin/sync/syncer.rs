@@ -18,6 +18,7 @@ use std::time;
 
 use crate::chain;
 use crate::common::types::{SyncState, SyncStatus};
+use crate::core::global;
 use crate::core::pow::Difficulty;
 use crate::grin::sync::body_sync::BodySync;
 use crate::grin::sync::header_sync::HeaderSync;
@@ -76,18 +77,20 @@ impl SyncRunner {
 		let mut n = 0;
 		const MIN_PEERS: usize = 3;
 		loop {
-			let wp = self.peers.more_work_peers();
+			let wp = self.peers.more_or_same_work_peers();
 			// exit loop when:
-			// * we have more than MIN_PEERS more_work peers
+			// * we have more than MIN_PEERS more_or_same_work peers
 			// * we are synced already, e.g. grin was quickly restarted
 			// * timeout
-			if wp.len() > MIN_PEERS
-				|| (wp.len() == 0
+			if wp > MIN_PEERS
+				|| (wp == 0
 					&& self.peers.enough_peers()
 					&& head.total_difficulty > Difficulty::zero())
 				|| n > wait_secs
 			{
-				break;
+				if wp > 0 || !global::is_production_mode() {
+					break;
+				}
 			}
 			thread::sleep(time::Duration::from_secs(1));
 			n += 1;

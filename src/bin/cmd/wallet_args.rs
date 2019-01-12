@@ -14,7 +14,7 @@
 
 use crate::api::TLSConfig;
 use crate::util::file::get_first_line;
-use crate::util::Mutex;
+use crate::util::{Mutex, ZeroingString};
 /// Argument parsing and error handling for wallet commands
 use clap::ArgMatches;
 use failure::Fail;
@@ -57,26 +57,57 @@ impl From<std::io::Error> for ParseError {
 	}
 }
 
-pub fn prompt_password(password: &Option<String>) -> String {
+fn prompt_password_stdout(prompt: &str) -> ZeroingString {
+	ZeroingString::from(rpassword::prompt_password_stdout(prompt).unwrap())
+}
+
+pub fn prompt_password(password: &Option<ZeroingString>) -> ZeroingString {
 	match password {
-		None => rpassword::prompt_password_stdout("Password: ").unwrap(),
-		Some(p) => p.to_owned(),
+		None => prompt_password_stdout("Password: "),
+		Some(p) => p.clone(),
 	}
 }
 
-fn prompt_password_confirm() -> String {
-	let mut first = String::from("first");
-	let mut second = String::from("second");
+fn prompt_password_confirm() -> ZeroingString {
+	let mut first = ZeroingString::from("first");
+	let mut second = ZeroingString::from("second");
 	while first != second {
-		first = rpassword::prompt_password_stdout("Password: ").unwrap();
-		second = rpassword::prompt_password_stdout("Confirm Password: ").unwrap();
+		first = prompt_password_stdout("Password: ");
+		second = prompt_password_stdout("Confirm Password: ");
 	}
 	first
 }
 
-fn prompt_recovery_phrase() -> Result<String, ParseError> {
+fn prompt_replace_seed() -> Result<bool, ParseError> {
+	let interface = Arc::new(Interface::new("replace_seed")?);
+	interface.set_report_signal(Signal::Interrupt, true);
+	interface.set_prompt("Replace seed? (y/n)> ")?;
+	println!();
+	println!("Existing wallet.seed file already exists. Continue?");
+	println!("Continuing will back up your existing 'wallet.seed' file as 'wallet.seed.bak'");
+	println!();
+	loop {
+		let res = interface.read_line()?;
+		match res {
+			ReadResult::Eof => return Ok(false),
+			ReadResult::Signal(sig) => {
+				if sig == Signal::Interrupt {
+					interface.cancel_read_line()?;
+					return Err(ParseError::CancelledError);
+				}
+			}
+			ReadResult::Input(line) => match line.trim() {
+				"Y" | "y" => return Ok(true),
+				"N" | "n" => return Ok(false),
+				_ => println!("Please respond y or n"),
+			},
+		}
+	}
+}
+
+fn prompt_recovery_phrase() -> Result<ZeroingString, ParseError> {
 	let interface = Arc::new(Interface::new("recover")?);
-	let mut phrase = String::new();
+	let mut phrase = ZeroingString::from("");
 	interface.set_report_signal(Signal::Interrupt, true);
 	interface.set_prompt("phrase> ")?;
 	loop {
@@ -92,7 +123,7 @@ fn prompt_recovery_phrase() -> Result<String, ParseError> {
 			}
 			ReadResult::Input(line) => {
 				if WalletSeed::from_mnemonic(&line).is_ok() {
-					phrase = line;
+					phrase = ZeroingString::from(line);
 					break;
 				} else {
 					println!();
@@ -167,7 +198,7 @@ pub fn parse_global_args(
 	let node_api_secret = get_first_line(config.node_api_secret_path.clone());
 	let password = match args.value_of("pass") {
 		None => None,
-		Some(p) => Some(p.to_owned()),
+		Some(p) => Some(ZeroingString::from(p)),
 	};
 
 	let tls_conf = match config.tls_certificate_file.clone() {
@@ -206,19 +237,33 @@ pub fn parse_init_args(
 		false => 32,
 		true => 16,
 	};
-	println!("Please enter a password for your new wallet");
+	let recovery_phrase = match args.is_present("recover") {
+		true => Some(prompt_recovery_phrase()?),
+		false => None,
+	};
+
+	if recovery_phrase.is_some() {
+		println!("Please provide a new password for the recovered wallet");
+	} else {
+		println!("Please enter a password for your new wallet");
+	}
+
 	let password = match g_args.password.clone() {
 		Some(p) => p,
 		None => prompt_password_confirm(),
 	};
+
 	Ok(command::InitArgs {
 		list_length: list_length,
 		password: password,
 		config: config.clone(),
+		recovery_phrase: recovery_phrase,
+		restore: false,
 	})
 }
 
 pub fn parse_recover_args(
+	config: &WalletConfig,
 	g_args: &command::GlobalArgs,
 	args: &ArgMatches,
 ) -> Result<command::RecoverArgs, ParseError> {
@@ -226,6 +271,16 @@ pub fn parse_recover_args(
 		match args.is_present("display") {
 			true => (prompt_password(&g_args.password), None),
 			false => {
+				let cont = {
+					if command::wallet_seed_exists(config).is_err() {
+						prompt_replace_seed()?
+					} else {
+						true
+					}
+				};
+				if !cont {
+					return Err(ParseError::CancelledError);
+				}
 				let phrase = prompt_recovery_phrase()?;
 				println!("Please provide a new password for the recovered wallet");
 				(prompt_password_confirm(), Some(phrase.to_owned()))
@@ -482,7 +537,11 @@ pub fn wallet_command(
 			command::init(&global_wallet_args, a)
 		}
 		("recover", Some(args)) => {
-			let a = arg_parse!(parse_recover_args(&global_wallet_args, &args));
+			let a = arg_parse!(parse_recover_args(
+				&wallet_config,
+				&global_wallet_args,
+				&args
+			));
 			command::recover(&wallet_config, a)
 		}
 		("listen", Some(args)) => {
@@ -545,7 +604,7 @@ pub fn wallet_command(
 			command::cancel(inst_wallet(), a)
 		}
 		("restore", Some(_)) => command::restore(inst_wallet()),
-		("check_repair", Some(_)) => command::check_repair(inst_wallet()),
+		("check", Some(_)) => command::check_repair(inst_wallet()),
 		_ => {
 			let msg = format!("Unknown wallet command, use 'grin help wallet' for details");
 			return Err(ErrorKind::ArgumentError(msg).into());
