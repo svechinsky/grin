@@ -13,3 +13,5 @@ test_output
 wallet_data
 wallet/db
 .idea/
+chain_data
+*.log
