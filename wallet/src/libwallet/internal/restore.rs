@@ -469,9 +469,7 @@ where
 	K: Keychain,
 {
 	warn!("Verifying wallet outputs match on chain outputs");
-	let tx_log: Vec<TxLogEntry> = wallet
-		.tx_log_iter()
-		.collect();
+	let tx_log: Vec<TxLogEntry> = wallet.tx_log_iter().collect();
 	let wallet_outputs = updater::retrieve_outputs(&mut *wallet, true, None, None)?;
 	let chain_outputs: Vec<OutputResult> = outputs
 		.unwrap_or(collect_chain_outputs(wallet)?)
@@ -517,9 +515,9 @@ where
 	let chain_sum = sum_commits(chain_commitments, vec![commit]).unwrap();
 
 	let chain_value_sum = chain_outputs.into_iter().fold(0, |acc, x| acc + x.value);
-	let tx_sum = tx_log
-		.into_iter()
-		.fold(0, |acc, x| acc + x.amount_credited - x.amount_debited - x.fee.unwrap_or(0));
+	let tx_sum = tx_log.into_iter().fold(0, |acc, x| {
+		acc + x.amount_credited - x.amount_debited - x.fee.unwrap_or(0)
+	});
 	let commits_public = secp.commit_value(tx_sum).unwrap();
 
 	if chain_sum == commits_public {
@@ -528,7 +526,9 @@ where
 		error!("Wallet outputs don't match chain outputs");
 		error!(
 			"Transaction balance is {} sum of chain outputs is {} diff is {}",
-			tx_sum, chain_value_sum, chain_value_sum - tx_sum
+			tx_sum,
+			chain_value_sum,
+			chain_value_sum - tx_sum
 		);
 	}
 	return Ok(());
